@@ -1,165 +1,114 @@
+# app.py
 import streamlit as st
 import numpy as np
 import pandas as pd
 import re
 from pathlib import Path
 
+# <-- uses your models/data/ranker built in core.py
+from core import merged, rank_hybrid_filtered, candidate_total
+
 st.set_page_config(page_title="Indonesian Recipe Gacha", page_icon="🍳", layout="wide")
 st.markdown("## 🤖🍽️ Hybrid Deep Recipe Finder")
 
-# ========= DATA & MODELS (from Drive folder) =========
-import gdown
+# ---------- small format helpers ----------
+def _split_to_items(text: str):
+    if not isinstance(text, str):
+        return []
+    parts = re.split(r'[\n,;•\-]+', text)
+    return [p.strip() for p in parts if p.strip()]
 
-FOLDER_URL = "https://drive.google.com/drive/folders/186OfK2ekqedpEEoNhJM2crhDvWE2uxPp?usp=sharing"
-DATA_DIR = Path("recipes_data")
+def _to_bullets(items):
+    return "\n".join(f"- {x}" for x in items) if items else "- —"
 
-@st.cache_data(show_spinner=True)
-def fetch_and_merge(folder_url: str) -> pd.DataFrame:
-    DATA_DIR.mkdir(exist_ok=True)
-    # download all files in the Drive folder (must be public)
-    gdown.download_folder(folder_url, output=str(DATA_DIR), quiet=True, use_cookies=False)
+def _to_steps(items):
+    return "\n".join(f"{i}. {x}" for i, x in enumerate(items, start=1)) if items else "1. —"
 
-    csv_files = sorted([p for p in DATA_DIR.glob("*.csv")])
-    if not csv_files:
-        raise RuntimeError("No CSV files found in 'recipes_data'. Make sure the Drive folder is public and has CSVs.")
+# ---------- the function you were missing ----------
+def find_one(category, a, b, strategy, alpha, k_pref, boost, boost_w, require_both, ptr):
+    """Return (row or None, pool_size:int, total:int) using your real ranker."""
+    idxs, picked = rank_hybrid_filtered(
+        category, a, b, ptr=ptr,
+        alpha=float(alpha), k_prefilter=int(k_pref),
+        strategy=strategy,
+        boost_exact=bool(boost), boost_weight=float(boost_w),
+        require_both=bool(require_both),
+    )
+    pool_size = 0 if idxs is None else len(idxs)
+    total = candidate_total(category, strategy, int(k_pref), a, b, require_both)
+    if not picked:
+        return None, pool_size, total
+    return merged.iloc[picked[0]], pool_size, max(1, total)
 
-    def normalize(s: str) -> str:
-        return re.sub(r"\s+", " ", str(s).lower()).strip()
+# ---------- UI ----------
+with st.sidebar:
+    st.header("Search")
+    category = st.selectbox("Dish type", ["main dish","side dish","snack"])
+    ing1 = st.text_input("Main ingredient 1", "")
+    ing2 = st.text_input("Main ingredient 2", "")
 
-    MAIN_TITLE_KWS = {
-        "nasi","mi","mie","bihun","kwetiau","kwetiaw","spaghetti","pasta",
-        "soto","sop","sup","rawon","rendang","gudeg","tongseng","gulai",
-        "kari","kare","opor","sate","bakso","pecel","lontong","ketoprak",
-        "tahu campur","gado gado","pempek","ikan bakar","ayam bakar","ikan kuah",
-        "woku","rica","balado","semur","tumis sayur","sayur asem","sayur lodeh"
-    }
-    SIDE_TITLE_KWS = {
-        "orek","oseng","tumis","balado","bacem","semur","terik","acar",
-        "sambal","telur dadar","orak arik","fuyunghai","perkedel","pepese","pepes",
-        "tahu goreng","tempe goreng","telur ceplok","telur balado"
-    }
-    SNACK_TITLE_KWS = {
-        "martabak","risol","risoles","lumpia","pastel","donat","bolu","brownies",
-        "cookies","kukis","pukis","kue","pisang goreng","cireng","cilok",
-        "sosis gulung","popcorn","bakso tahu goreng","pangsit goreng","cemilan","snack"
-    }
-    MAIN_ING_KWS = {
-        "nasi","beras","mie","bihun","spaghetti","kwetiau","kentang","ubi",
-        "santan","kaldu","beras ketan","lontong","ketupat"
-    }
-    PROTEIN_KWS = {"ayam","sapi","kambing","ikan","udang","telur","daging"}
-    SIDE_ING_KWS = {"tahu","tempe","telur","sambal","sayur"}
-    SNACK_ING_KWS = {"cokelat","keju","tepung","gula","mentega","margarin","tepung terigu"}
+    st.markdown("### Retrieval strategy")
+    strategy = st.radio(" ", ["auto","hybrid","two-stage"], index=0, label_visibility="collapsed")
 
-    def classify_row(title: str, ingredients: str) -> str:
-        from collections import Counter
-        t = normalize(title)
-        ing = normalize(ingredients)
-        score = Counter({"main dish":0, "side dish":0, "snack":0})
-        # Title cues
-        if any(kw in t for kw in SNACK_TITLE_KWS): score["snack"] += 3
-        if any(kw in t for kw in SIDE_TITLE_KWS):  score["side dish"] += 2
-        if any(kw in t for kw in MAIN_TITLE_KWS):  score["main dish"] += 2
-        # Ingredient cues
-        tokens = set(re.split(r"[^a-z0-9]+", ing))
-        if tokens & MAIN_ING_KWS: score["main dish"] += 2
-        if tokens & PROTEIN_KWS:  score["main dish"] += 1
-        if tokens & SIDE_ING_KWS: score["side dish"] += 1
-        if tokens & SNACK_ING_KWS and not (tokens & MAIN_ING_KWS): score["snack"] += 1
-        # Heuristics
-        if "goreng" in t and (("tahu" in t) or ("tempe" in t) or ({"tahu","tempe"} & tokens)):
-            if not (tokens & MAIN_ING_KWS): score["side dish"] += 1
-        if ("soto" in t or "sup" in t or "sop" in t) and "bakso tahu goreng" not in t:
-            score["main dish"] += 2
-        if any(k in t for k in ["kue","donat","bolu","brownies","cookies"]) and not (tokens & MAIN_ING_KWS):
-            score["snack"] += 2
-        # Decide + tie-breakers
-        best = max(score.values())
-        winners = [k for k,v in score.items() if v==best]
-        if len(winners)==1: return winners[0]
-        if "goreng" in t and (("tahu" in t) or ("tempe" in t)): return "side dish"
-        if tokens & MAIN_ING_KWS: return "main dish"
-        for c in ["main dish","side dish","snack"]:
-            if c in winners: return c
+    alpha = st.slider("BERT weight (hybrid)", 0.0, 1.0, 0.7, 0.05)
+    k_pref = st.slider("Two-stage: top-K from TF-IDF", 50, 2000, 300, 50)
 
-    frames = []
-    for p in csv_files:
-        df = pd.read_csv(p)
-        for col in ["Title","Ingredients","Steps","Loves","URL"]:
-            if col not in df.columns: df[col] = ""
-        df["Source"] = p.name
-        df["Category"] = [classify_row(t, i) for t, i in zip(df["Title"], df["Ingredients"])]
-        frames.append(df[["Title","Ingredients","Steps","Loves","URL","Source","Category"]])
+    st.markdown("### Matching options")
+    boost_exact = st.checkbox("Boost exact word matches", value=False)
+    boost_weight = st.slider("Exact-match weight", 0.0, 1.5, 0.25, 0.05)
+    require_both = st.checkbox("Require both ingredients (AND)", value=False)
 
-    merged_df = pd.concat(frames, ignore_index=True)
-    return merged_df
+    find = st.button("🔎 Find", use_container_width=True)
+    reroll = st.button("🎲 Reroll", use_container_width=True)
+    reset = st.button("↩️ Reset", use_container_width=True)
 
-merged = fetch_and_merge(FOLDER_URL)
+# keep position across rerolls
+if "ptr" not in st.session_state: st.session_state.ptr = 0
 
-def build_cat_to_idx(df: pd.DataFrame):
-    out = {}
-    for cat in ["main dish","side dish","snack"]:
-        out[cat] = np.where(df["Category"] == cat)[0]
-    return out
+# actions
+if reset:
+    st.session_state.ptr = 0
 
-cat_to_idx = build_cat_to_idx(merged)
+if find:
+    st.session_state.ptr = 0
 
-# Optional: TF-IDF + BERT (cache)
-@st.cache_resource(show_spinner=True)
-def build_tfidf(df: pd.DataFrame):
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    text = (df["Title"].fillna("") + " " + df["Ingredients"].fillna("")).str.lower()
-    vec = TfidfVectorizer(min_df=2, max_features=50000, ngram_range=(1,2))
-    X = vec.fit_transform(text)
-    return vec, X
+if reroll:
+    st.session_state.ptr += 1
 
-try:
-    vec, X = build_tfidf(merged)
-except Exception as e:
-    vec, X = None, None
-    st.warning(f"TF-IDF not built: {e}")
+row, pool_size, total = find_one(
+    category, ing1, ing2, strategy, alpha, k_pref,
+    boost_exact, boost_weight, require_both, st.session_state.ptr
+)
 
-@st.cache_resource(show_spinner=True)
-def build_bert(df: pd.DataFrame):
-    from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer("sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2")
-    text = (df["Title"].fillna("") + " " + df["Ingredients"].fillna("")).tolist()
-    emb = model.encode(text, batch_size=64, show_progress_bar=False, normalize_embeddings=True)
-    return model, np.asarray(emb, dtype=np.float32)
+# ---------- Right side: results ----------
+colL, colR = st.columns([1.1, 1.9])
 
-try:
-    model, embeddings = build_bert(merged)
-except Exception as e:
-    model, embeddings = None, None
-    st.warning(f"BERT embeddings not built: {e}")
+with colL:
+    st.markdown("#### Candidate")
+    if total > 0:
+        # 1-based for display
+        st.progress(min(1.0, ( (st.session_state.ptr % total) + 1) / float(total)))
+        st.caption(f"Candidate # {(st.session_state.ptr % total) + 1} of {total}  •  Pool size: {pool_size}")
 
-# ========= UI =========
-st.sidebar.header("Search")
-cat = st.sidebar.selectbox("Dish type", ["main dish","side dish","snack"])
-a = st.sidebar.text_input("Main ingredient 1", "")
-b = st.sidebar.text_input("Main ingredient 2", "")
-boost = st.sidebar.checkbox("Boost exact word matches", value=False)
-boost_w = st.sidebar.slider("Exact-match weight", 0.0, 1.5, 0.25, 0.05)
-require_both = st.sidebar.checkbox("Require both ingredients (AND)", value=False)
+with colR:
+    with st.container():
+        if row is None:
+            st.subheader("—")
+            st.write("No recipe matched your settings. Try relaxing filters or turning off **AND**.")
+        else:
+            st.subheader(str(row.get("Title","—")))
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Ingredients**")
+                st.text(_to_bullets(_split_to_items(row.get("Ingredients",""))))
+            with c2:
+                st.markdown("**Steps**")
+                st.text(_to_steps(_split_to_items(row.get("Steps",""))))
+            if str(row.get("URL","")).strip():
+                st.markdown(f"**Source**: {row['URL']}")
+            st.caption(f"Category: {row.get('Category','?')}  •  Loves: {row.get('Loves','-')}  •  Source file: {row.get('Source','-')}")
 
-# Minimal demo “search” (replace with your full ranker later)
-def simple_filter(df: pd.DataFrame, cat: str, a: str, b: str, require_both: bool):
-    idxs = cat_to_idx[cat]
-    sub = df.iloc[idxs].copy()
-    terms = [t for t in [a.strip(), b.strip()] if t]
-    if not terms:
-        return sub.head(30)
-    if require_both and len(terms) == 2:
-        mask = sub["Ingredients"].str.contains(terms[0], case=False, na=False) & \
-               sub["Ingredients"].str.contains(terms[1], case=False, na=False)
-        return sub[mask].head(30)
-    # otherwise OR filter
-    m = False
-    for t in terms:
-        m = m | sub["Ingredients"].str.contains(t, case=False, na=False) | \
-                sub["Title"].str.contains(t, case=False, na=False)
-    return sub[m].head(30)
-
-results = simple_filter(merged, cat, a, b, require_both)
-st.write(f"Found {len(results)} results (showing up to 30):")
-st.dataframe(results[["Title","Category","Loves","URL","Source"]])
+st.divider()
+st.markdown("##### Debug view (top 30 table for your current dish type)")
+sub = merged.loc[merged["Category"].str.lower() == category.lower(), ["Title","Category","Loves","URL","Source"]].head(30)
+st.dataframe(sub, use_container_width=True)
