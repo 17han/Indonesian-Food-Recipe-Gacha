@@ -17,6 +17,11 @@ st.markdown("## 🤖🍽️ Hybrid Deep Recipe Finder")
 st.caption("Semantic (BERT) + Keyword (TF-IDF) with Auto / Hybrid / Two-stage, "
            "Exact-match boost, and optional AND filter for two ingredients.")
 
+# in app.py, after the header:
+counts = merged["Category"].str.lower().value_counts().to_dict()
+st.caption(f"Dataset: main dish {counts.get('main dish',0)}, "
+           f"side dish {counts.get('side dish',0)}, snack {counts.get('snack',0)}")
+
 # ---------------------------------------------------------------------
 # Small helpers
 # ---------------------------------------------------------------------
