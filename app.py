@@ -37,6 +37,11 @@ def _to_bullets(items):
 def _to_steps(items):
     return "\n".join(f"{i}. {x}" for i, x in enumerate(items, start=1)) if items else "1. —"
 
+
+st.sidebar.write(f"Loaded recipes: {len(merged)}")
+st.sidebar.write(f"Columns: {list(merged.columns)}")
+st.sidebar.write(merged.head())
+
 # ---------------------------------------------------------------------
 # Resettable widgets (each gets a small ↩︎ button beside it)
 # ---------------------------------------------------------------------
