@@ -41,17 +41,29 @@ def find_one(category, a, b, strategy, alpha, k_pref, boost, boost_w, require_bo
 # ──────────────────────────────────────────────────────────────────────────────
 # Session defaults
 # ──────────────────────────────────────────────────────────────────────────────
-st.session_state.setdefault("ptr", 0)           # reroll pointer
-st.session_state.setdefault("show_result", False)  # start with no result shown
-st.session_state.setdefault("help_open", False)    # tutorial expander state
+defaults = {
+    "ptr": 0,
+    "show_result": False,
+    "help_open": False,
+    "category": "main dish",
+    "ing1": "",
+    "ing2": "",
+    "strategy": "auto",
+    "alpha": 0.7,
+    "k_pref": 300,
+    "boost_exact": False,
+    "boost_weight": 0.25,
+    "require_both": False,
+}
+for k, v in defaults.items():
+    st.session_state.setdefault(k, v)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Header + Tutorial with toggle button
+# Header + Tutorial with toggle
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("## 🤖🍽️ Hybrid Deep Recipe Finder")
 
 with st.sidebar:
-    # Toggle the expander every click (open if closed; close if open)
     if st.button("❓ Help / Tutorial", use_container_width=True):
         st.session_state.help_open = not st.session_state.help_open
 
@@ -59,77 +71,99 @@ with st.expander("📘 How to use (full tutorial)", expanded=st.session_state.he
     st.markdown(
         """
 **What this app does**  
-Find Indonesian recipes by combining **semantic search** (BERT) and **keyword search** (TF-IDF).  
-Enter 1–2 ingredients, tweak options, hit **Find**, then **Reroll** to cycle candidates.
+Find Indonesian recipes using **semantic (BERT)** + **keyword (TF-IDF)** hybrid search.
 
 ---
 
-### 1) Basic flow
-1. Pick a **Dish type** (main / side / snack).  
-2. Type **Main ingredient 1/2** (optional): e.g., `ayam`, `nasi`, `kecap`, `cabe`, `cokelat`.  
-3. Leave **Retrieval strategy = Auto** unless you want manual control.  
-4. (Optional) **Boost exact word matches** or **Require both ingredients (AND)**.  
-5. Click **Find** → **Reroll** to browse more.
+### 🧭 Quick Steps
+1. Pick **Dish type** (main / side / snack)  
+2. Fill **Main ingredient 1/2** (optional)  
+3. Leave **Auto** strategy (recommended)  
+4. Adjust sliders or options if you like  
+5. Click **Find** → **Reroll** to browse
 
 ---
 
-### 2) Retrieval strategy
-- **Auto (recommended)** – smartly balances BERT/TF-IDF; switches to two-stage on big sets.  
-- **Hybrid** – fixed blend `score = α·BERT + (1−α)·TF-IDF`. Control **BERT weight**.  
-- **Two-stage** – TF-IDF picks **top-K** → BERT re-ranks those K (faster on large sets).
+### ⚙️ Strategy Guide
+- **Auto** – smart blend of BERT + TF-IDF (adjusts automatically)  
+- **Hybrid** – fixed blend `score = α·BERT + (1−α)·TF-IDF`  
+- **Two-stage** – TF-IDF selects top-K → BERT re-ranks (faster for large sets)
 
-**Tips**: Higher **BERT weight** = more semantic; lower = more literal keywords.
-
----
-
-### 3) Matching options
-- **Boost exact word matches** – bonus when your tokens appear in Title/Ingredients.  
-  **Exact-match weight** controls strength (0.25 gentle → 1.0 strong).  
-- **Require both ingredients (AND)** – only recipes that contain **both** ingredient 1 **and** 2 (exact tokens).
+**Tips:**  
+- ↑ BERT weight → more *semantic* matches  
+- ↓ BERT weight → more *literal* matches  
 
 ---
 
-### 4) Examples
-- Main dish with soy-sauce chicken: `ayam` + `kecap`, **Auto**, Boost on (0.25–0.6).  
-- Snack ideas with tofu: Dish = snack, Ingredient 1 = `tahu`.  
-- Strict “ayam + cabe”: enable **AND**.
+### 🧩 Matching Options
+- **Boost exact word matches** → bonus for recipes literally containing your ingredient  
+- **Exact-match weight** → how strong the boost is  
+- **Require both ingredients (AND)** → only recipes with both ingredients
 
 ---
 
-### 5) Troubleshooting
-- **No results** → turn off **AND**, lower **Exact-match weight**, or try synonyms (`cabai`/`cabe`, `mie`/`mi`).  
-- **Slow** → use **Two-stage** and reduce **top-K** (e.g., 200).  
-- **Weird matches** → lower **BERT weight** or enable a small exact-match boost.
+### 🧠 Examples
+| Goal | Settings |
+|------|-----------|
+| Soy-sauce chicken | main dish, ayam + kecap, Boost on |
+| Tofu snacks | snack, tahu |
+| Spicy chicken only | main dish, ayam + cabe, AND on |
+
+---
+
+### 🆘 Troubleshooting
+- “No recipe found” → turn off AND, lower exact-match weight, or change words  
+- “Slow” → use Two-stage, lower top-K  
+- “Weird matches” → lower BERT weight or enable Boost
         """
     )
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Sidebar controls
+# Sidebar Controls
 # ──────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("Search")
-    category = st.selectbox("Dish type", ["main dish","side dish","snack"])
-    ing1 = st.text_input("Main ingredient 1", "")
-    ing2 = st.text_input("Main ingredient 2", "")
+
+    st.session_state.category = st.selectbox("Dish type", ["main dish", "side dish", "snack"], index=["main dish","side dish","snack"].index(st.session_state.category))
+    st.session_state.ing1 = st.text_input("Main ingredient 1", st.session_state.ing1)
+    st.session_state.ing2 = st.text_input("Main ingredient 2", st.session_state.ing2)
 
     st.markdown("### Retrieval strategy")
-    strategy = st.radio(" ", ["auto","hybrid","two-stage"], index=0, label_visibility="collapsed")
-    alpha = st.slider("BERT weight (hybrid)", 0.0, 1.0, 0.7, 0.05)
-    k_pref = st.slider("Two-stage: top-K from TF-IDF", 50, 2000, 300, 50)
+    st.session_state.strategy = st.radio(" ", ["auto","hybrid","two-stage"],
+                                         index=["auto","hybrid","two-stage"].index(st.session_state.strategy),
+                                         label_visibility="collapsed")
+
+    # ─── Sliders with reset buttons ───
+    def resettable_slider(label, key, min_value, max_value, value, step, help_text=""):
+        c1, c2 = st.columns([5,1])
+        with c1:
+            st.session_state[key] = st.slider(label, min_value=min_value, max_value=max_value,
+                                              value=st.session_state.get(key, value), step=step, help=help_text)
+        with c2:
+            if st.button("↩️", key=f"reset_{key}", help=f"Reset {label}"):
+                st.session_state[key] = value
+
+    resettable_slider("BERT weight (hybrid)", "alpha", 0.0, 1.0, 0.7, 0.05,
+                      "Higher = more semantic, Lower = more literal keywords.")
+    resettable_slider("Two-stage: top-K from TF-IDF", "k_pref", 50, 2000, 300, 50,
+                      "How many TF-IDF candidates to pass to BERT.")
 
     st.markdown("### Matching options")
-    boost_exact = st.checkbox("Boost exact word matches", value=False)
-    boost_weight = st.slider("Exact-match weight", 0.0, 1.5, 0.25, 0.05)
-    require_both = st.checkbox("Require both ingredients (AND)", value=False)
+    st.session_state.boost_exact = st.checkbox("Boost exact word matches", value=st.session_state.boost_exact)
+    st.session_state.boost_weight = st.slider("Exact-match weight", 0.0, 1.5, st.session_state.boost_weight, 0.05)
+    st.session_state.require_both = st.checkbox("Require both ingredients (AND)", value=st.session_state.require_both)
 
-    btn_find  = st.button("🔎 Find",  use_container_width=True)
-    btn_reroll= st.button("🎲 Reroll",use_container_width=True)
-    btn_reset = st.button("↩️ Reset", use_container_width=True)
+    # ─── Main buttons ───
+    btn_find = st.button("🔎 Find", use_container_width=True)
+    btn_reroll = st.button("🎲 Reroll", use_container_width=True)
+    btn_reset = st.button("🧹 Reset All", use_container_width=True)
 
-# Button logic (controls both pointer and whether to show results)
+# ──────────────────────────────────────────────────────────────────────────────
+# Button logic
+# ──────────────────────────────────────────────────────────────────────────────
 if btn_reset:
-    st.session_state.ptr = 0
-    st.session_state.show_result = False
+    for k, v in defaults.items():
+        st.session_state[k] = v
 
 if btn_find:
     st.session_state.ptr = 0
@@ -140,18 +174,19 @@ if btn_reroll:
     st.session_state.show_result = True
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Main result pane (blank by default until Find/Reroll)
+# Main results
 # ──────────────────────────────────────────────────────────────────────────────
 left, right = st.columns([1.1, 1.9])
 
 if st.session_state.show_result:
-    # only run the expensive search when we actually want a result
     row, pool_size, total = find_one(
-        category, ing1, ing2, strategy, alpha, k_pref,
-        boost_exact, boost_weight, require_both, st.session_state.ptr
+        st.session_state.category, st.session_state.ing1, st.session_state.ing2,
+        st.session_state.strategy, st.session_state.alpha, st.session_state.k_pref,
+        st.session_state.boost_exact, st.session_state.boost_weight,
+        st.session_state.require_both, st.session_state.ptr
     )
 else:
-    row, pool_size, total = None, 0, 0  # blank state
+    row, pool_size, total = None, 0, 0
 
 with left:
     st.markdown("#### Candidate")
@@ -163,15 +198,15 @@ with left:
         st.caption("No candidate yet — enter ingredients and click **Find**.")
 
 with right:
-    box = st.container()
-    with box:
+    cont = st.container()
+    with cont:
         if not st.session_state.show_result:
             st.subheader("—")
             st.write("Start by entering an ingredient and pressing **Find**.")
         elif row is None:
             st.subheader("—")
             msg = "No recipe matched your settings."
-            if require_both and (ing1.strip() and ing2.strip()):
+            if st.session_state.require_both and (st.session_state.ing1.strip() and st.session_state.ing2.strip()):
                 msg += " Try turning off **AND** or adjusting keywords."
             st.write(msg)
         else:
@@ -186,6 +221,4 @@ with right:
             url = str(row.get("URL","")).strip()
             if url:
                 st.markdown(f"**Source**: {url}")
-            st.caption(
-                f"Category: {row.get('Category','?')}  •  Loves: {row.get('Loves','-')}  •  Source file: {row.get('Source','-')}"
-            )
+            st.caption(f"Category: {row.get('Category','?')}  •  Loves: {row.get('Loves','-')}  •  Source file: {row.get('Source','-')}")
