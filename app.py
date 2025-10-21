@@ -39,22 +39,86 @@ def find_one(category, a, b, strategy, alpha, k_pref, boost, boost_w, require_bo
     return merged.iloc[picked[0]], pool_size, max(1, total)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Header + quick instructions (replaces the long Feature Guide)
+# Header + Tutorial (collapsible) + optional sidebar “open help” button
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown("## 🤖🍽️ Hybrid Deep Recipe Finder")
-st.markdown(
-    """
-    **How to use**
-    1) Pick a **Dish type**.  
-    2) (Optional) Fill **Main ingredient 1/2** (e.g. `ayam`, `kecap`, `cabe`).  
-    3) Leave **Retrieval strategy = Auto** (smart mix of BERT + TF-IDF), or switch if you want.  
-    4) (Optional) Toggle **Boost exact word matches** / **Require both ingredients**.  
-    5) Click **Find** → **Reroll** to cycle through other good matches.
-    """
-)
+
+# allow sidebar button to open the tutorial dropdown
+if "show_help" not in st.session_state:
+    st.session_state.show_help = False
+
+with st.sidebar:
+    if st.button("❓ Help / Tutorial", use_container_width=True):
+        st.session_state.show_help = True
+
+with st.expander("📘 How to use (full tutorial)", expanded=st.session_state.show_help):
+    st.session_state.show_help = False  # reset the flag after opening once
+    st.markdown(
+        """
+**What this app does**  
+Find Indonesian recipes by combining **semantic search** (BERT) and **keyword search** (TF-IDF).  
+You can ask for 1–2 ingredients, tweak matching behavior, then **Find** and **Reroll** to browse candidates.
+
+---
+
+### 1) Basic flow
+1. Pick a **Dish type** (main / side / snack).  
+2. Enter **Main ingredient 1/2** (optional). e.g., `ayam`, `nasi`, `kecap`, `cabe`, `cokelat`.  
+3. Leave **Retrieval strategy = Auto** (smart) unless you want manual control.  
+4. (Optional) Turn on **Boost exact word matches** or **Require both ingredients (AND)**.  
+5. Click **Find** → click **Reroll** to cycle through other strong matches.
+
+---
+
+### 2) Retrieval strategy
+- **Auto (recommended)** – automatically mixes BERT + TF-IDF, and switches to two-stage when the set is large.  
+  *Rare words → more TF-IDF; Common words → more BERT; Large pools → TF-IDF prefilter then BERT.*
+- **Hybrid** – fixed formula: `score = α·BERT + (1 − α)·TF-IDF`.  
+  Control α with **BERT weight**.
+- **Two-stage** – TF-IDF selects **top-K** → BERT re-ranks those K.  
+  Faster on big sets; adjust **K** with the *Two-stage: top-K from TF-IDF* slider.
+
+**Tips**
+- If results feel too “literal”, raise **BERT weight** (more semantic).  
+- If results feel too “fuzzy”, lower **BERT weight** (more exact keywords).  
+- For speed on large categories, prefer **Two-stage** or keep **Auto**.
+
+---
+
+### 3) Matching options
+- **Boost exact word matches** – give extra score to recipes that literally contain your ingredients
+  in Title/Ingredients.  
+  **Exact-match weight** controls the strength (0.25 = gentle, 1.0 = strong).
+- **Require both ingredients (AND)** – shows only recipes that contain **both** ingredient 1 **and** 2  
+  (exact token presence). Turn this off if you get “no results”.
+
+---
+
+### 4) Examples
+- *Find a soy-sauce chicken*:  
+  - Dish: **main dish**, Ingredients: `ayam`, `kecap`.  
+  - Strategy: **Auto**, Boost: **on**, Exact-match weight: **0.25–0.6**.
+- *Crispy tofu snacks*:  
+  - Dish: **snack**, Ingredients: `tahu`, *(leave second blank)*.  
+  - Strategy: **Hybrid**, α = **0.6**.
+- *Strictly “ayam + cabe” together*:  
+  - Dish: **main dish**, Ingredients: `ayam`, `cabe`.  
+  - **Require both ingredients (AND)** ✅.
+
+---
+
+### 5) Troubleshooting
+- **“No recipe matched”** – try turning off **AND**, reduce **Exact-match weight**, or tweak words
+  (`cabai` vs `cabe`, `mie` vs `mi`).  
+- **Too slow** – switch to **Two-stage** and reduce **top-K** (e.g., 200).  
+- **Weird matches** – lower **BERT weight** (more literal), or turn on **Boost exact** a little.
+
+Enjoy exploring! 🍜
+        """
+    )
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Sidebar (with concise tooltips)
+# Sidebar Controls (with tooltips)
 # ──────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.header("Search")
@@ -82,26 +146,26 @@ with st.sidebar:
     alpha = st.slider(
         "BERT weight (hybrid)",
         0.0, 1.0, 0.7, 0.05,
-        help="Higher = more semantic. Lower = more literal keywords. Used by Hybrid (and by Auto internally)."
+        help="Higher = more semantic. Lower = more literal keywords. Used by Hybrid (and used internally by Auto)."
     )
     k_pref = st.slider(
         "Two-stage: top-K from TF-IDF",
         50, 2000, 300, 50,
-        help="How many TF-IDF candidates to hand to BERT when two-stage is used."
+        help="How many TF-IDF candidates get re-ranked by BERT in two-stage."
     )
 
     st.markdown("### Matching options")
     boost_exact = st.checkbox(
         "Boost exact word matches", value=False,
-        help="Give a small score bonus when your exact ingredient tokens appear."
+        help="Give a score bonus when your exact tokens appear in Title/Ingredients."
     )
     boost_weight = st.slider(
         "Exact-match weight", 0.0, 1.5, 0.25, 0.05,
-        help="Strength of the exact-match bonus."
+        help="Strength of that exact-token bonus."
     )
     require_both = st.checkbox(
         "Require both ingredients (AND)", value=False,
-        help="Only consider recipes that contain BOTH ingredient 1 AND 2 (exact tokens)."
+        help="Only keep recipes that contain BOTH ingredient 1 AND ingredient 2 (exact tokens)."
     )
 
     find = st.button("🔎 Find", use_container_width=True)
